@@ -1,16 +1,17 @@
-name: Check UOU SW Notices
+name: Check Notices and U-STEP Programs
 
 on:
   schedule:
-    # 30분마다 실행 (UTC 기준)
+    # 30분마다 자동 실행 (UTC 기준)
     - cron: '*/30 * * * *'
+  # GitHub 웹 Actions 탭에서 수동 실행(Run workflow) 지원
   workflow_dispatch:
 
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # JSON 상태 업데이트 푸시 권한
+      contents: write  # JSON 상태 저장 파일 push 권한
 
     steps:
       - name: Checkout repository
@@ -27,15 +28,18 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install playwright requests; fi
           playwright install --with-deps chromium
 
-      - name: Run Crawler
+      - name: Run Crawlers
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK_GENERAL: ${{ secrets.DISCORD_WEBHOOK_GENERAL }}
+          DISCORD_WEBHOOK_CHALLENGE: ${{ secrets.DISCORD_WEBHOOK_CHALLENGE }}
         run: |
           python check_notice.py
+          python check_ustep.py
 
       - name: Commit and Push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add latest_notice.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update latest notice state [skip ci]" && git push)
+          git add latest_notice.json latest_ustep.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update notice and ustep state [skip ci]" && git push)
