@@ -4,7 +4,7 @@ import sys
 from playwright.sync_api import sync_playwright
 import requests
 
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1538554047064317966/c06Z1gtK8w5jE3KhT_We8AGes4nWkcyx4l4DtY2xHMIdLf9-RELYfPuYcng8i6pEaXmF"
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK")
 PAGE_URL = "https://sw.ulsan.ac.kr/site/swulsan/notices"
 STATE_FILE = "latest_notice.json"
 
