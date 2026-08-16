@@ -1,10 +1,9 @@
 import json
 import os
 import time
-import requests
 from playwright.sync_api import sync_playwright
+import requests
 
-# 환경변수에서 일반/도전 웹훅 각각 로드
 WEBHOOK_GENERAL = os.environ.get("DISCORD_WEBHOOK_GENERAL")
 WEBHOOK_CHALLENGE = os.environ.get("DISCORD_WEBHOOK_CHALLENGE")
 
@@ -12,161 +11,166 @@ BASE_URL = "https://ustep.ulsan.ac.kr"
 LIST_URL = f"{BASE_URL}/home/sub/prog-list"
 STATE_FILE = "latest_ustep.json"
 
-# 마일리지 유형별 설정 (전송 대상 웹훅, 색상, 라벨)
 MILEAGE_CONFIG = {
     "1": {
         "name": "일반 장학",
         "webhook": WEBHOOK_GENERAL,
-        "color": 3447003,      # 블루
-        "badge": "📘 [일반 장학]"
+        "color": 3447003,
+        "badge": "📘 [일반 장학]",
     },
     "2": {
         "name": "도전 장학",
         "webhook": WEBHOOK_CHALLENGE,
-        "color": 15844367,     # 골드/옐로우
-        "badge": "🏆 [도전 장학]"
-    }
+        "color": 15844367,
+        "badge": "🏆 [도전 장학]",
+    },
 }
 
 
-def send_discord_alert(program):
-    """지정된 마일리지 전용 웹훅으로 임베드 + 썸네일 전송"""
-    mile_type = program["mile_type"]
-    config = MILEAGE_CONFIG.get(mile_type)
+def send_discord_alert(prog):
+  mile_type = prog["mile_type"]
+  config = MILEAGE_CONFIG.get(mile_type)
+  if not config or not config["webhook"]:
+    print(f"[Skip] {config['name'] if config else '미상'} 웹훅 미설정")
+    return
 
-    if not config:
-        print(f"[Error] 알 수 없는 마일리지 타입: {mile_type}")
-        return
+  embed = {
+      "title": f"{config['badge']} {prog['title']}",
+      "description": (
+          f"**구분**: {config['name']}\n"
+          f"**일정/D-Day**: {prog['d_day']}\n"
+          f"**신청기간**: {prog['apply_period']}\n\n"
+          f"🔗 [프로그램 바로가기]({prog['link']})"
+      ),
+      "color": config["color"],
+  }
 
-    target_webhook = config["webhook"]
-    if not target_webhook:
-        print(f"[Warning] {config['name']}용 웹훅 환경변수가 설정되지 않아 건너뜁니다.")
-        return
+  if prog["img_url"]:
+    embed["image"] = {"url": prog["img_url"]}
 
-    embed = {
-        "title": f"{config['badge']} {program['title']}",
-        "description": (
-            f"**구분**: {config['name']}\n"
-            f"**상태/D-Day**: {program['d_day']}\n"
-            f"**학기**: {program['semester']}\n\n"
-            f"🔗 [프로그램 바로가기]({program['link']})"
-        ),
-        "color": config["color"]
-    }
+  payload = {
+      "username": f"U-STEP {config['name']} 알리미",
+      "avatar_url": f"{BASE_URL}/favicon.ico",
+      "embeds": [embed],
+  }
 
-    # 썸네일 이미지 포함
-    if program["img_url"]:
-        embed["image"] = {"url": program["img_url"]}
-
-    payload = {
-        "username": f"U-STEP {config['name']} 알리미",
-        "avatar_url": f"{BASE_URL}/favicon.ico",
-        "embeds": [embed]
-    }
-
-    res = requests.post(target_webhook, json=payload)
-    print(f"[Discord] {config['name']} 전송: {program['title'][:15]}... -> {res.status_code}")
-    time.sleep(0.6)  # Rate Limit 방지
+  res = requests.post(config["webhook"], json=payload)
+  print(f"[Discord] {config['name']} 전송: {prog['title'][:15]}... -> {res.status_code}")
+  time.sleep(0.6)
 
 
-def scrape_programs_by_mileage(page, mile_value):
-    """드롭다운(일반/도전) 선택 후 리스트 크롤링"""
-    programs = []
+def scrape_cards(page, mile_value):
+  """해당 마일리지 페이지의 모든 카드 수집"""
+  programs = []
 
-    page.select_option("select#schMile", mile_value)
-    page.wait_for_timeout(1500)  # AJAX 렌더링 대기
+  # URL 파라미터나 폼 선택으로 정확히 이동
+  target_url = f"{LIST_URL}?schMile={mile_value}"
+  page.goto(target_url, wait_until="networkidle", timeout=30000)
+  page.wait_for_timeout(1000)
 
-    # 프로그램 카드 영역 선택
-    cards = page.query_selector_all(".board-list-program .program-item, .board-list-program li, .board-list-program > div")
+  # 카드 요소들 (a.item) 전체 탐색
+  cards = page.query_selector_all(
+      ".board-list-program a.item, .board-list-program .schedule-slide-wrap"
+      " a.item"
+  )
+  if not cards:
+    cards = page.query_selector_all("a.item")
 
-    for card in cards:
-        title_el = card.query_selector("strong, .title, .tit, h4")
-        title = title_el.inner_text().strip() if title_el else ""
-        if not title:
-            continue
+  print(
+      f"[{MILEAGE_CONFIG[mile_value]['name']}] 감지된 카드 수: {len(cards)}개"
+  )
 
-        img_el = card.query_selector("img")
-        img_src = img_el.get_attribute("src") if img_el else ""
-        if img_src and img_src.startswith("/"):
-            img_src = f"{BASE_URL}{img_src}"
+  for card in cards:
+    # 1. 제목 추출 (.board-subject or .board-con)
+    subj_el = card.query_selector(".board-subject, .board-con")
+    title = subj_el.inner_text().strip() if subj_el else ""
+    if not title:
+      continue
 
-        dday_el = card.query_selector(".d-day, span[class*='d-'], .badge")
-        d_day = dday_el.inner_text().strip() if dday_el else "진행중"
+    # 2. 이미지 URL 추출
+    img_el = card.query_selector(".board-img img, img")
+    img_src = img_el.get_attribute("src") if img_el else ""
+    if img_src and not img_src.startswith("http"):
+      img_src = f"{BASE_URL}{img_src}"
 
-        semester_el = card.query_selector(".semester, .cate, span")
-        semester = semester_el.inner_text().strip() if semester_el else ""
+    # 3. D-day 추출
+    dday_el = card.query_selector(".badge-day, span[class*='badge']")
+    d_day = dday_el.inner_text().strip() if dday_el else ""
 
-        link_el = card.query_selector("a")
-        link = link_el.get_attribute("href") if link_el else LIST_URL
-        if link.startswith("/"):
-            link = f"{BASE_URL}{link}"
+    # 4. 신청 기간 추출 (.board-time)
+    time_el = card.query_selector(".board-time")
+    apply_period = (
+        time_el.inner_text().replace("\n", " ").strip() if time_el else ""
+    )
 
-        # 고유 식별키 (마일리지타입 + 제목)
-        unique_key = f"{mile_value}_{title}"
+    # 5. 링크 추출
+    href = card.get_attribute("href") or ""
+    link = f"{BASE_URL}{href}" if href.startswith("/") else href
 
-        programs.append({
-            "id": unique_key,
-            "mile_type": mile_value,
-            "title": title,
-            "img_url": img_src,
-            "d_day": d_day,
-            "semester": semester,
-            "link": link
-        })
+    # 고유 ID (마일리지_제목 or href 파라미터 기반)
+    prog_id = f"{mile_value}_{href}" if href else f"{mile_value}_{title}"
 
-    return programs
+    programs.append({
+        "id": prog_id,
+        "mile_type": mile_value,
+        "title": title,
+        "img_url": img_src,
+        "d_day": d_day,
+        "apply_period": apply_period,
+        "link": link,
+    })
+
+  return programs
 
 
 def run():
-    sent_ids = set()
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                sent_ids = set(data.get("sent_ids", []))
-        except Exception as e:
-            print(f"[Warning] 상태 파일 로드 실패: {e}")
+  sent_ids = set()
+  is_first_run = True
 
-    all_programs = []
+  if os.path.exists(STATE_FILE):
+    try:
+      with open(STATE_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        loaded = data.get("sent_ids", [])
+        if loaded:
+          sent_ids = set(loaded)
+          is_first_run = False
+    except Exception as e:
+      print(f"[Warning] 상태 파일 로드 에러: {e}")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+  print(f"[U-STEP] 이전 저장된 ID 수: {len(sent_ids)}개")
 
-        print(f"[Fetch] U-STEP 접속 중: {LIST_URL}")
-        page.goto(LIST_URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_selector("select#schMile", timeout=15000)
+  all_progs = []
+  with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    page = browser.new_page()
 
-        # 1. 일반 장학 수집
-        print("[Fetch] 일반 장학 목록 조회...")
-        all_programs.extend(scrape_programs_by_mileage(page, "1"))
+    # 1: 일반 장학, 2: 도전 장학 순회
+    for m_type in ["1", "2"]:
+      progs = scrape_cards(page, m_type)
+      all_progs.extend(progs)
 
-        # 2. 도전 장학 수집
-        print("[Fetch] 도전 장학 목록 조회...")
-        all_programs.extend(scrape_programs_by_mileage(page, "2"))
+    browser.close()
 
-        browser.close()
+  # 최초 실행 여부 체크
+  if is_first_run:
+    print(
+        f"[Init] U-STEP 최초 실행: 현재 {len(all_progs)}개 프로그램을 기준"
+        " 데이터로 저장합니다. (알림 생략)"
+    )
+    for p in all_progs:
+      sent_ids.add(p["id"])
+  else:
+    new_progs = [p for p in all_progs if p["id"] not in sent_ids]
+    print(f"[U-STEP] 새로 감지된 프로그램: {len(new_progs)}개")
 
-    # 새로운 비교과 프로그램 필터링
-    new_programs = [p for p in all_programs if p["id"] not in sent_ids]
+    for prog in reversed(new_progs):
+      send_discord_alert(prog)
+      sent_ids.add(prog["id"])
 
-    if not new_programs:
-        print("[Info] 새로 올라온 비교과 프로그램이 없습니다.")
-        return
-
-    print(f"[Alert] 새로 감지된 프로그램 수: {len(new_programs)}개")
-
-    # 과거 순서부터 각 채널로 발송
-    for prog in reversed(new_programs):
-        send_discord_alert(prog)
-        sent_ids.add(prog["id"])
-
-    # 상태 저장
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"sent_ids": list(sent_ids)}, f, ensure_ascii=False, indent=2)
-
-    print(f"[Success] 상태 저장 완료 (총 {len(sent_ids)}개 기록)")
+  with open(STATE_FILE, "w", encoding="utf-8") as f:
+    json.dump({"sent_ids": list(sent_ids)}, f, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
-    run()
+  run()
