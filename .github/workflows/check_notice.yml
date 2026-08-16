@@ -4,14 +4,13 @@ on:
   schedule:
     # 30분마다 자동 실행 (UTC 기준)
     - cron: '*/30 * * * *'
-  # GitHub 웹 Actions 탭에서 수동 실행(Run workflow) 지원
   workflow_dispatch:
 
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # JSON 상태 저장 파일 push 권한
+      contents: write  # JSON 상태 저장 파일 커밋/푸시 권한
 
     steps:
       - name: Checkout repository
@@ -33,13 +32,15 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           DISCORD_WEBHOOK_GENERAL: ${{ secrets.DISCORD_WEBHOOK_GENERAL }}
           DISCORD_WEBHOOK_CHALLENGE: ${{ secrets.DISCORD_WEBHOOK_CHALLENGE }}
+          DISCORD_WEBHOOK_MUNSU: ${{ secrets.DISCORD_WEBHOOK_MUNSU }}
         run: |
           python check_notice.py
           python check_ustep.py
+          python check_munsu.py
 
       - name: Commit and Push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add latest_notice.json latest_ustep.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update notice and ustep state [skip ci]" && git push)
+          git add latest_notice.json latest_ustep.json latest_munsu.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update notices, U-STEP and Munsu state [skip ci]" && git push)
