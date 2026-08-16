@@ -1,8 +1,9 @@
-name: Check Notices and U-STEP Programs
+name: Check Notices, U-STEP Programs, and Academic Schedule
 
 on:
   schedule:
-    # 30분마다 자동 실행 (UTC 기준)
+    # 30분마다 정기 실행 (UTC 기준)
+    # 한국 시간 기준 오전 8시(UTC 23:00)에도 정기 실행에 포함되어 '오늘의 일정'을 자연스럽게 1회 체크 및 발송합니다.
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
@@ -10,7 +11,7 @@ jobs:
   check-and-notify:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # JSON 상태 저장 파일 커밋/푸시 권한
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -33,14 +34,17 @@ jobs:
           DISCORD_WEBHOOK_GENERAL: ${{ secrets.DISCORD_WEBHOOK_GENERAL }}
           DISCORD_WEBHOOK_CHALLENGE: ${{ secrets.DISCORD_WEBHOOK_CHALLENGE }}
           DISCORD_WEBHOOK_MUNSU: ${{ secrets.DISCORD_WEBHOOK_MUNSU }}
+          DISCORD_WEBHOOK_SCHEDULE_DAILY: ${{ secrets.DISCORD_WEBHOOK_SCHEDULE_DAILY }}
+          DISCORD_WEBHOOK_SCHEDULE_UPDATE: ${{ secrets.DISCORD_WEBHOOK_SCHEDULE_UPDATE }}
         run: |
           python check_notice.py
           python check_ustep.py
           python check_munsu.py
+          python check_schedule.py
 
       - name: Commit and Push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add latest_notice.json latest_ustep.json latest_munsu.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update notices, U-STEP and Munsu state [skip ci]" && git push)
+          git add latest_notice.json latest_ustep.json latest_munsu.json latest_schedule.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update notices and schedule state [skip ci]" && git push)
