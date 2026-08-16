@@ -10,7 +10,7 @@ jobs:
   check-and-notify:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # JSON 상태 파일 git commit & push 권한
 
     steps:
       - name: Checkout repository
@@ -37,17 +37,19 @@ jobs:
           DISCORD_WEBHOOK_GENERAL: ${{ secrets.DISCORD_WEBHOOK_GENERAL }}
           DISCORD_WEBHOOK_CHALLENGE: ${{ secrets.DISCORD_WEBHOOK_CHALLENGE }}
           DISCORD_WEBHOOK_MUNSU: ${{ secrets.DISCORD_WEBHOOK_MUNSU }}
+          DISCORD_WEBHOOK_ICT: ${{ secrets.DISCORD_WEBHOOK_ICT }}
           DISCORD_WEBHOOK_SCHEDULE_DAILY: ${{ secrets.DISCORD_WEBHOOK_SCHEDULE_DAILY }}
           DISCORD_WEBHOOK_SCHEDULE_UPDATE: ${{ secrets.DISCORD_WEBHOOK_SCHEDULE_UPDATE }}
         run: |
           python check_notice.py
           python check_ustep.py
           python check_munsu.py
+          python check_ict.py
           python check_schedule.py
 
       - name: Commit and Push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add latest_notice.json latest_ustep.json latest_munsu.json latest_schedule.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update notices and schedule state [skip ci]" && git push)
+          git add latest_notice.json latest_ustep.json latest_munsu.json latest_ict.json latest_schedule.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update notices, U-STEP, ICT, Munsu and schedule state [skip ci]" && git push)
