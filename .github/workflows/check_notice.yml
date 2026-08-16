@@ -2,14 +2,16 @@ name: Check UOU SW Notices
 
 on:
   schedule:
-    # 30분마다 자동 실행 (UTC 기준)
+    # 30분마다 실행 (UTC 기준)
     - cron: '*/30 * * * *'
-  # GitHub 웹에서 수동 실행(Run workflow) 지원
   workflow_dispatch:
 
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # JSON 상태 업데이트 푸시 권한
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,11 +20,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install playwright requests; fi
           playwright install --with-deps chromium
 
       - name: Run Crawler
