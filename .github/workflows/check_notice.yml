@@ -2,15 +2,15 @@ name: Check Notices, U-STEP Programs, and Academic Schedule
 
 on:
   schedule:
-    # 30분마다 정기 실행 (UTC 기준)
-    - cron: '*/30 * * * *'
+    # 3시간마다 실행 (0시, 3시, 6시, 9시, 12시, 15시, 18시, 21시)
+    - cron: '0 */3 * * *'
   workflow_dispatch:
 
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # JSON 상태 파일 git commit & push 권한
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -24,7 +24,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # requirements.txt 파일이 있다면 읽고, 없으면 아래 패키지 설치
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           else 
@@ -44,16 +43,18 @@ jobs:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
         run: |
           python check_notice.py
+          sleep 5
           python check_ustep.py
+          sleep 5
           python check_munsu.py
+          sleep 5
           python check_ict.py
+          sleep 5
           python check_schedule.py
 
       - name: Commit and Push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          # JSON 상태 파일들을 커밋 (ICT는 이제 Firestore를 쓰므로 빠져도 되지만, 
-          # 다른 스크립트들이 아직 JSON을 쓰므로 그대로 둡니다.)
           git add latest_notice.json latest_ustep.json latest_munsu.json latest_schedule.json
           git diff --quiet && git diff --staged --quiet || (git commit -m "Update crawler state [skip ci]" && git push)
