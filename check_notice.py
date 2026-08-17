@@ -34,11 +34,9 @@ def send_discord_alert(notice):
     time.sleep(0.5)
 
 def run():
-    # Firestore DB 연결
     db = get_db()
     sw_ref = db.collection("sw_notices")
 
-    # 1. Firestore에 저장된 기존 글 ID 목록 불러오기
     docs = sw_ref.stream()
     saved_ids = {doc.id for doc in docs}
     is_first_run = len(saved_ids) == 0
@@ -52,26 +50,33 @@ def run():
         page = browser.new_page()
         
         try:
-            page.goto(LIST_URL, wait_until="networkidle", timeout=60000)
-            page.wait_for_selector("table tbody tr", timeout=20000)
+            page.goto(LIST_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(3000) # 추가 렌더링 대기
         except Exception as e:
             print(f"[Error] SW공지 페이지 로딩 실패: {e}")
             browser.close()
             return
 
-        rows = page.query_selector_all("table tbody tr")
+        # 테이블 행(tr) 또는 일반 목록 태그 탐색
+        rows = page.query_selector_all("tr")
         print(f"[Info] SW공지에서 총 {len(rows)}개의 행을 감지했습니다.")
 
         for row in rows:
             data_id = row.get_attribute("data-id")
             
-            link_el = row.query_selector("td.subject a, a")
+            link_el = row.query_selector("a")
             if not link_el:
                 continue
                 
             title = link_el.inner_text().strip()
             href = link_el.get_attribute("href") or ""
             
+            # 공지사항 상세 링크가 포함된 경우만 필터링 (메뉴 링크 등 제외)
+            if not href or "board" not in href and "idx" not in href and "view" not in href and "code=notice" not in href:
+                # 제목이 너무 짧거나 메뉴 이름 같으면 스킵
+                if len(title) < 3 or "home" in href:
+                    continue
+
             if not data_id:
                 doc_id = href.replace("/", "_").replace("?", "_").replace("=", "_") or title
             else:
@@ -105,7 +110,6 @@ def run():
 
         browser.close()
 
-    # 2. 신규 공지 필터링
     new_notices = [n for n in current_notices if n["id"] not in saved_ids]
 
     if not new_notices:
@@ -118,7 +122,6 @@ def run():
         if not is_first_run:
             send_discord_alert(notice)
         
-        # Firestore 저장
         sw_ref.document(notice["id"]).set({
             "title": notice["title"],
             "writer": notice["writer"],
