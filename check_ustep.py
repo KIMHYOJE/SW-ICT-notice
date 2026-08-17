@@ -29,7 +29,7 @@ MILEAGE_CONFIG = {
 
 
 def extract_prog_id(href, title, mile_type):
-    """URL 쿼리에서 고유 번호(MA_IDX, SUB_IDX) 추출"""
+    """URL에서 MA_IDX와 SUB_IDX 고유 번호 추출"""
     ma = re.search(r'MA_IDX=(\d+)', href)
     sub = re.search(r'SUB_IDX=(\d+)', href)
     if ma and sub:
@@ -68,86 +68,95 @@ def send_discord_alert(prog):
 
     res = requests.post(config["webhook"], json=payload)
     print(f"[Discord] {config['name']} 전송: {prog['title'][:15]}... -> {res.status_code}")
-    time.sleep(0.6)
+    time.sleep(0.6)  # Rate Limit 방지
 
 
-def scrape_by_mileage(page, mile_value):
-    """드롭다운 직접 선택 후 카드 크롤링"""
+def scrape_all_cards_for_mileage(page, mile_value):
+    """드롭다운 선택 후 1페이지부터 끝 페이지(2, 3, 4, 5...)까지 버튼 클릭하며 전부 수집"""
     programs = []
     
-    # 1. 페이지 접속
+    # 1. 목록 페이지 접속
     page.goto(LIST_URL, wait_until="networkidle", timeout=60000)
     page.wait_for_selector("select#schMile", timeout=20000)
 
-    # 2. 마일리지 드롭다운 선택 및 change 이벤트 발생
+    # 2. 마일리지(일반=1 / 도전=2) 드롭다운 선택 및 change 트리거
     page.select_option("select#schMile", mile_value)
-    # 검색 폼 제출 또는 엔터/버튼 클릭 트리거
-    page.evaluate("""() => {
-        const select = document.querySelector('select#schMile');
-        if (select) {
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        const form = document.querySelector('form');
-        if (form && form.submit) {
-            // submit 함수가 있으면 호출
-        }
-    }""")
-    page.wait_for_timeout(2000)  # 목록 갱신 대기
+    page.evaluate("document.querySelector('select#schMile').dispatchEvent(new Event('change', { bubbles: true }))")
+    page.wait_for_timeout(2000)
 
-    # 3. 카드 목록 (a.item) 탐색
-    cards = page.query_selector_all("a.item")
-    print(f"[{MILEAGE_CONFIG[mile_value]['name']}] 감지된 카드 태그: {len(cards)}개")
+    current_page = 1
 
-    for card in cards:
-        # 제목 추출: board-con 우선 (텍스트가 있는 요소를 탐색)
-        title = ""
-        con_el = card.query_selector(".board-con")
-        subj_el = card.query_selector(".board-subject")
+    while True:
+        print(f"[{MILEAGE_CONFIG[mile_value]['name']}] {current_page}페이지 탐색 중...")
         
-        if con_el and con_el.inner_text().strip():
-            title = con_el.inner_text().strip()
-        elif subj_el and subj_el.inner_text().strip():
-            title = subj_el.inner_text().strip()
+        # 순수 프로그램 카드 링크만 타겟팅 (prog-detail 파라미터가 포함된 a.item)
+        cards = page.query_selector_all("div.sub-con a.item[href*='prog-detail']")
         
-        # 그래도 없으면 h4, strong 탐색
-        if not title:
-            h_el = card.query_selector("h4, strong, .title")
-            if h_el:
-                title = h_el.inner_text().strip()
+        page_items_count = 0
+        for card in cards:
+            href = card.get_attribute("href") or ""
+            if "prog-detail" not in href:
+                continue  # 개인정보처리방침 등 기타 링크 제외
 
-        if not title:
-            continue
+            # 제목 추출 (.board-con 우선, 없으면 .board-subject 등)
+            title = ""
+            con_el = card.query_selector(".board-con")
+            subj_el = card.query_selector(".board-subject")
+            
+            if con_el and con_el.inner_text().strip():
+                title = con_el.inner_text().strip()
+            elif subj_el and subj_el.inner_text().strip():
+                title = subj_el.inner_text().strip()
+            
+            if not title:
+                continue
 
-        # 이미지 URL 추출
-        img_el = card.query_selector("img")
-        img_src = img_el.get_attribute("src") if img_el else ""
-        if img_src and not img_src.startswith("http"):
-            img_src = f"{BASE_URL}{img_src}"
+            # 이미지 URL 추출
+            img_el = card.query_selector(".board-img img, img")
+            img_src = img_el.get_attribute("src") if img_el else ""
+            if img_src and not img_src.startswith("http"):
+                img_src = f"{BASE_URL}{img_src}"
 
-        # D-Day 추출
-        dday_el = card.query_selector(".badge-day, span[class*='badge']")
-        d_day = dday_el.inner_text().strip() if dday_el else ""
+            # D-Day 추출
+            dday_el = card.query_selector(".badge-day, span[class*='badge-day']")
+            d_day = dday_el.inner_text().strip() if dday_el else ""
 
-        # 신청 기간 / 운영 기간
-        time_el = card.query_selector(".board-time")
-        apply_period = time_el.inner_text().strip() if time_el else ""
+            # 신청 기간 / 운영 기간 (.board-time)
+            time_el = card.query_selector(".board-time")
+            apply_period = time_el.inner_text().strip() if time_el else ""
 
-        # 링크
-        href = card.get_attribute("href") or ""
-        link = f"{BASE_URL}{href}" if href.startswith("/") else href
+            link = f"{BASE_URL}{href}" if href.startswith("/") else href
+            prog_id = extract_prog_id(href, title, mile_value)
 
-        # 고유 식별 ID
-        prog_id = extract_prog_id(href, title, mile_value)
+            programs.append({
+                "id": prog_id,
+                "mile_type": mile_value,
+                "title": title,
+                "img_url": img_src,
+                "d_day": d_day,
+                "apply_period": apply_period,
+                "link": link
+            })
+            page_items_count += 1
 
-        programs.append({
-            "id": prog_id,
-            "mile_type": mile_value,
-            "title": title,
-            "img_url": img_src,
-            "d_day": d_day,
-            "apply_period": apply_period,
-            "link": link
-        })
+        print(f"[{MILEAGE_CONFIG[mile_value]['name']}] {current_page}페이지에서 {page_items_count}개 수집")
+
+        # 다음 페이지 번호 버튼 찾기 (예: data-page="2", data-page="3" ...)
+        next_page = current_page + 1
+        next_btn = page.query_selector(f"div.board-page a.btn-page[data-page='{next_page}']")
+
+        if next_btn:
+            # 다음 페이지 클릭
+            next_btn.click()
+            page.wait_for_timeout(2000)
+            current_page = next_page
+        else:
+            # 다음 페이지 버튼이 없으면 끝까지 탐색 완료
+            print(f"[{MILEAGE_CONFIG[mile_value]['name']}] 마지막 페이지 도달 (총 {current_page}페이지)")
+            break
+
+        if current_page > 15:  # 무한루프 방지 안전장치
+            break
 
     return programs
 
@@ -171,18 +180,18 @@ def run():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        # 1: 일반 장학, 2: 도전 장학 순회
-        print("[Fetch] 일반 장학 조회 시작...")
-        all_programs.extend(scrape_by_mileage(page, "1"))
+        # 1: 일반 장학, 2: 도전 장학 순회 (모든 페이지 버튼 클릭 탐색)
+        print("[Fetch] 일반 장학 전체 페이지 수집 시작...")
+        all_programs.extend(scrape_all_cards_for_mileage(page, "1"))
 
-        print("[Fetch] 도전 장학 조회 시작...")
-        all_programs.extend(scrape_by_mileage(page, "2"))
+        print("[Fetch] 도전 장학 전체 페이지 수집 시작...")
+        all_programs.extend(scrape_all_cards_for_mileage(page, "2"))
 
         browser.close()
 
-    print(f"[U-STEP] 총 수집된 프로그램 수: {len(all_programs)}개")
+    print(f"[U-STEP] 총 수집된 비교과 프로그램 수: {len(all_programs)}개")
 
-    # 신규 프로그램 필터링
+    # 신규 프로그램 필터링 (sent_ids에 없는 것만)
     new_programs = [p for p in all_programs if p["id"] not in sent_ids]
 
     if not new_programs:
@@ -191,7 +200,7 @@ def run():
 
     print(f"[Alert] 새로 감지되어 전송할 프로그램: {len(new_programs)}개")
 
-    # 디스코드 전송 (오래된 순서대로)
+    # 오래된 글부터 순서대로 발송
     for prog in reversed(new_programs):
         send_discord_alert(prog)
         sent_ids.add(prog["id"])
