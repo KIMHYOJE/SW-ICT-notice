@@ -40,6 +40,7 @@ jobs:
           DISCORD_WEBHOOK_ICT: ${{ secrets.DISCORD_WEBHOOK_ICT }}
           DISCORD_WEBHOOK_SCHEDULE_DAILY: ${{ secrets.DISCORD_WEBHOOK_SCHEDULE_DAILY }}
           DISCORD_WEBHOOK_SCHEDULE_UPDATE: ${{ secrets.DISCORD_WEBHOOK_SCHEDULE_UPDATE }}
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
         run: |
           python check_notice.py
           python check_ustep.py
