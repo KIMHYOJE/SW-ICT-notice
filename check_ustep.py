@@ -1,28 +1,29 @@
-import json
 import os
 import re
 import time
 import requests
+from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from firebase_helper import get_db
+from firebase_admin import firestore
 
 WEBHOOK_GENERAL = os.environ.get("DISCORD_WEBHOOK_GENERAL")
 WEBHOOK_CHALLENGE = os.environ.get("DISCORD_WEBHOOK_CHALLENGE")
 
 BASE_URL = "https://ustep.ulsan.ac.kr"
 LIST_URL = f"{BASE_URL}/home/sub/prog-list"
-STATE_FILE = "latest_ustep.json"
 
 MILEAGE_CONFIG = {
     "1": {
         "name": "일반 장학",
         "webhook": WEBHOOK_GENERAL,
-        "color": 3447003,      # 파란색
+        "color": 3447003,
         "badge": "📘 [일반 장학]"
     },
     "2": {
         "name": "도전 장학",
         "webhook": WEBHOOK_CHALLENGE,
-        "color": 15844367,     # 골드/노란색
+        "color": 15844367,
         "badge": "🏆 [도전 장학]"
     }
 }
@@ -68,18 +69,16 @@ def send_discord_alert(prog):
 
     res = requests.post(config["webhook"], json=payload)
     print(f"[Discord] {config['name']} 전송: {prog['title'][:15]}... -> {res.status_code}")
-    time.sleep(0.6)  # Rate Limit 방지
+    time.sleep(0.6)
 
 
 def scrape_all_cards_for_mileage(page, mile_value):
-    """드롭다운 선택 후 1페이지부터 끝 페이지(2, 3, 4, 5...)까지 버튼 클릭하며 전부 수집"""
+    """드롭다운 선택 후 1페이지부터 끝 페이지까지 버튼 클릭하며 전부 수집"""
     programs = []
     
-    # 1. 목록 페이지 접속
     page.goto(LIST_URL, wait_until="networkidle", timeout=60000)
     page.wait_for_selector("select#schMile", timeout=20000)
 
-    # 2. 마일리지(일반=1 / 도전=2) 드롭다운 선택 및 change 트리거
     page.select_option("select#schMile", mile_value)
     page.evaluate("document.querySelector('select#schMile').dispatchEvent(new Event('change', { bubbles: true }))")
     page.wait_for_timeout(2000)
@@ -88,17 +87,14 @@ def scrape_all_cards_for_mileage(page, mile_value):
 
     while True:
         print(f"[{MILEAGE_CONFIG[mile_value]['name']}] {current_page}페이지 탐색 중...")
-        
-        # 순수 프로그램 카드 링크만 타겟팅 (prog-detail 파라미터가 포함된 a.item)
         cards = page.query_selector_all("div.sub-con a.item[href*='prog-detail']")
         
         page_items_count = 0
         for card in cards:
             href = card.get_attribute("href") or ""
             if "prog-detail" not in href:
-                continue  # 개인정보처리방침 등 기타 링크 제외
+                continue
 
-            # 제목 추출 (.board-con 우선, 없으면 .board-subject 등)
             title = ""
             con_el = card.query_selector(".board-con")
             subj_el = card.query_selector(".board-subject")
@@ -111,17 +107,14 @@ def scrape_all_cards_for_mileage(page, mile_value):
             if not title:
                 continue
 
-            # 이미지 URL 추출
             img_el = card.query_selector(".board-img img, img")
             img_src = img_el.get_attribute("src") if img_el else ""
             if img_src and not img_src.startswith("http"):
                 img_src = f"{BASE_URL}{img_src}"
 
-            # D-Day 추출
             dday_el = card.query_selector(".badge-day, span[class*='badge-day']")
             d_day = dday_el.inner_text().strip() if dday_el else ""
 
-            # 신청 기간 / 운영 기간 (.board-time)
             time_el = card.query_selector(".board-time")
             apply_period = time_el.inner_text().strip() if time_el else ""
 
@@ -141,46 +134,40 @@ def scrape_all_cards_for_mileage(page, mile_value):
 
         print(f"[{MILEAGE_CONFIG[mile_value]['name']}] {current_page}페이지에서 {page_items_count}개 수집")
 
-        # 다음 페이지 번호 버튼 찾기 (예: data-page="2", data-page="3" ...)
         next_page = current_page + 1
         next_btn = page.query_selector(f"div.board-page a.btn-page[data-page='{next_page}']")
 
         if next_btn:
-            # 다음 페이지 클릭
             next_btn.click()
             page.wait_for_timeout(2000)
             current_page = next_page
         else:
-            # 다음 페이지 버튼이 없으면 끝까지 탐색 완료
-            print(f"[{MILEAGE_CONFIG[mile_value]['name']}] 마지막 페이지 도달 (총 {current_page}페이지)")
+            print(f"[{MILEAGE_CONFIG[mile_value]['name']}] 마지막 페이지 도달")
             break
 
-        if current_page > 15:  # 무한루프 방지 안전장치
+        if current_page > 15:
             break
 
     return programs
 
 
 def run():
-    sent_ids = set()
+    # Firestore DB 연결
+    db = get_db()
+    ustep_ref = db.collection("ustep_programs")
 
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                sent_ids = set(data.get("sent_ids", []))
-        except Exception as e:
-            print(f"[Warning] 상태 파일 로드 에러: {e}")
+    # 1. Firestore에 저장된 기존 프로그램 ID 목록 불러오기
+    docs = ustep_ref.stream()
+    saved_ids = {doc.id for doc in docs}
+    is_first_run = len(saved_ids) == 0
 
-    print(f"[U-STEP] 기존 저장된 ID 수: {len(sent_ids)}개")
+    print(f"[U-STEP] 기존 저장된 프로그램 ID 수: {len(saved_ids)}개")
 
     all_programs = []
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
-        # 1: 일반 장학, 2: 도전 장학 순회 (모든 페이지 버튼 클릭 탐색)
         print("[Fetch] 일반 장학 전체 페이지 수집 시작...")
         all_programs.extend(scrape_all_cards_for_mileage(page, "1"))
 
@@ -189,27 +176,33 @@ def run():
 
         browser.close()
 
-    print(f"[U-STEP] 총 수집된 비교과 프로그램 수: {len(all_programs)}개")
+    print(f"[U-STEP] 총 수집된 프로그램 수: {len(all_programs)}개")
 
-    # 신규 프로그램 필터링 (sent_ids에 없는 것만)
-    new_programs = [p for p in all_programs if p["id"] not in sent_ids]
+    # 신규 프로그램 필터링
+    new_programs = [p for p in all_programs if p["id"] not in saved_ids]
 
     if not new_programs:
         print("[Info] U-STEP에 새로운 프로그램이 없습니다.")
         return
 
-    print(f"[Alert] 새로 감지되어 전송할 프로그램: {len(new_programs)}개")
+    print(f"[Alert] 새로 감지된 프로그램: {len(new_programs)}개")
 
-    # 오래된 글부터 순서대로 발송
     for prog in reversed(new_programs):
-        send_discord_alert(prog)
-        sent_ids.add(prog["id"])
+        if not is_first_run:
+            send_discord_alert(prog)
+        
+        # Firestore 저장
+        ustep_ref.document(prog["id"]).set({
+            "mile_type": prog["mile_type"],
+            "title": prog["title"],
+            "img_url": prog["img_url"],
+            "d_day": prog["d_day"],
+            "apply_period": prog["apply_period"],
+            "link": prog["link"],
+            "createdAt": firestore.SERVER_TIMESTAMP
+        })
 
-    # 상태 저장
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"sent_ids": list(sent_ids)}, f, ensure_ascii=False, indent=2)
-
-    print(f"[Success] U-STEP 상태 저장 완료 (총 {len(sent_ids)}개 기록)")
+    print(f"[Success] U-STEP Firestore 동기화 완료")
 
 
 if __name__ == "__main__":
