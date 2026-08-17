@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 from firebase_helper import get_db
 from firebase_admin import firestore
 
@@ -45,63 +45,65 @@ def run():
 
     print(f"[SW공지] 기존 저장된 글 ID 수: {len(saved_ids)}개")
 
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
-    try:
-        res = requests.get(LIST_URL, headers=headers, timeout=30)
-        res.raise_for_status()
-    except Exception as e:
-        print(f"[Error] SW공지 페이지 접속 실패: {e}")
-        return
-
-    soup = BeautifulSoup(res.text, "html.parser")
-    rows = soup.select("table tbody tr")
-    if not rows:
-        print("[Error] SW공지 게시글 목록을 찾을 수 없습니다.")
-        return
-
     current_notices = []
-    for row in rows:
-        data_id = row.get("data-id")
-        if not data_id:
-            # data-id가 없으면 링크나 제목 기반으로 대체 ID 생성 시도
-            link_el = row.select_one("a")
-            if not link_el: continue
-            href = link_el.get("href", "")
-            title = link_el.get_text(strip=True)
-            doc_id = href.replace("/", "_").replace("?", "_").replace("=", "_") or title
-        else:
-            doc_id = str(data_id)
-
-        link_el = row.select_one("td.subject a, a")
-        if not link_el: continue
-        title = link_el.get_text(strip=True)
-        href = link_el.get("href", "")
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
         
-        # 상세 링크 완성
-        if href.startswith("http"):
-            full_link = href
-        elif href.startswith("/"):
-            full_link = f"{BASE_URL}{href}"
-        else:
-            full_link = f"{BASE_URL}/{href}"
+        try:
+            page.goto(LIST_URL, wait_until="networkidle", timeout=60000)
+            page.wait_for_selector("table tbody tr", timeout=20000)
+        except Exception as e:
+            print(f"[Error] SW공지 페이지 로딩 실패: {e}")
+            browser.close()
+            return
 
-        # 작성자, 날짜 추출 (사이트 구조에 맞게 유연하게 처리)
-        tds = row.select("td")
-        writer = tds[2].get_text(strip=True) if len(tds) > 2 else "관리자"
-        date = tds[3].get_text(strip=True) if len(tds) > 3 else ""
+        rows = page.query_selector_all("table tbody tr")
+        print(f"[Info] SW공지에서 총 {len(rows)}개의 행을 감지했습니다.")
 
-        # 중요 공지 여부 확인
-        is_important = "notice" in row.get("class", []) or "important" in row.get("class", [])
+        for row in rows:
+            data_id = row.get_attribute("data-id")
+            
+            link_el = row.query_selector("td.subject a, a")
+            if not link_el:
+                continue
+                
+            title = link_el.inner_text().strip()
+            href = link_el.get_attribute("href") or ""
+            
+            if not data_id:
+                doc_id = href.replace("/", "_").replace("?", "_").replace("=", "_") or title
+            else:
+                doc_id = str(data_id)
 
-        current_notices.append({
-            "id": doc_id,
-            "title": title,
-            "writer": writer,
-            "date": date,
-            "link": full_link,
-            "is_important": is_important
-        })
+            if not title:
+                continue
+
+            if href.startswith("http"):
+                full_link = href
+            elif href.startswith("/"):
+                full_link = f"{BASE_URL}{href}"
+            else:
+                full_link = f"{BASE_URL}/{href}"
+
+            tds = row.query_selector_all("td")
+            writer = tds[2].inner_text().strip() if len(tds) > 2 else "관리자"
+            date = tds[3].inner_text().strip() if len(tds) > 3 else ""
+
+            row_class = row.get_attribute("class") or ""
+            is_important = "notice" in row_class or "important" in row_class
+
+            current_notices.append({
+                "id": doc_id,
+                "title": title,
+                "writer": writer,
+                "date": date,
+                "link": full_link,
+                "is_important": is_important
+            })
+
+        browser.close()
 
     # 2. 신규 공지 필터링
     new_notices = [n for n in current_notices if n["id"] not in saved_ids]
